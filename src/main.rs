@@ -10,22 +10,33 @@ struct Rule {
 }
 
 fn main() {
-    let files = fs::read_dir("src").expect("src directory does not exist");
+    compile_sources(true);
+}
 
-    for file in files {
-        let file = file.expect("file does not exist");
-        let rule = make_rule(&file.path());
-        let result = compile(&rule);
-        let stderr = str::from_utf8(&result.stderr);
-        println!("{}", result.status);
-        println!("{:#?}", stderr);
-        println!("Hello, world!");
-    }
+fn compile_sources(incremental: bool) {
+    let files = fs::read_dir("src").expect("src directory does not exist");
+    let rules = files
+        .map(|file| file.unwrap())
+        .filter(|file| file.path().extension().expect("file missing extension") == "cpp")
+        .map(|file| make_rule(&file.path()));
+
+    rules
+        .filter(|rule| !incremental || is_stale(&rule))
+        .map(|rule| compile(&rule))
+        .for_each(|result| {
+            let stderr = str::from_utf8(&result.stderr);
+            println!("{}", result.status);
+            println!("{:#?}", stderr);
+        });
 }
 
 fn compile(rule: &Rule) -> Output {
     let mut command = Command::new("g++");
-    command.arg(&rule.input).arg("-o").arg(&rule.output);
+    command
+        .arg(&rule.input)
+        .arg("-o")
+        .arg(&rule.output)
+        .arg("-c");
     println!("{:?}", command);
     let result = command.output().expect("failed to compile");
     result
@@ -47,4 +58,23 @@ fn make_rule(file: &Path) -> Rule {
     output.push(&output_file_name);
 
     Rule { input, output }
+}
+
+fn is_stale(rule: &Rule) -> bool {
+    let input_metadata = fs::metadata(&rule.input).expect("Cannot read input file metadata");
+    let output_metadata = fs::metadata(&rule.output);
+
+    if output_metadata.is_err() {
+        return true;
+    }
+
+    let input_time = input_metadata
+        .modified()
+        .expect("Cannot read file modified time");
+    let output_time = output_metadata
+        .expect("Cannot read output metadata")
+        .modified()
+        .expect("Cannot read file modified time");
+
+    input_time > output_time
 }
