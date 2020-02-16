@@ -6,6 +6,7 @@ use std::str;
 
 struct Rule {
     input: PathBuf,
+    dependencies: Vec<PathBuf>,
     output: PathBuf,
 }
 
@@ -56,25 +57,56 @@ fn make_rule(file: &Path) -> Rule {
 
     let mut output = PathBuf::from(&out_directory);
     output.push(&output_file_name);
+    let dependencies = get_source_dependencies(file);
 
-    Rule { input, output }
+    Rule {
+        input,
+        dependencies,
+        output,
+    }
+}
+
+fn get_source_dependencies(file: &Path) -> Vec<PathBuf> {
+    let mut command = Command::new("g++");
+    command.arg(&file).arg("-MM");
+    let result = command
+        .output()
+        .expect("failed to parse source dependencies");
+
+    let stdout = String::from_utf8(result.stdout).expect("String is not utf-8");
+    let dependencies: Vec<PathBuf> = stdout
+        .split_whitespace()
+        .filter(|&x| x != "\\")
+        .skip(1)
+        .map(|x| PathBuf::from(&x))
+        .collect();
+
+    println!("{:?}", dependencies);
+    dependencies
 }
 
 fn is_stale(rule: &Rule) -> bool {
-    let input_metadata = fs::metadata(&rule.input).expect("Cannot read input file metadata");
     let output_metadata = fs::metadata(&rule.output);
 
     if output_metadata.is_err() {
         return true;
     }
 
-    let input_time = input_metadata
-        .modified()
-        .expect("Cannot read file modified time");
     let output_time = output_metadata
         .expect("Cannot read output metadata")
         .modified()
         .expect("Cannot read file modified time");
 
-    input_time > output_time
+    let stale = rule
+        .dependencies
+        .iter()
+        .map(|x| {
+            fs::metadata(&x)
+                .expect("Cannot read metadata")
+                .modified()
+                .expect("Cannot read file modified time")
+        })
+        .any(|dependency_time| dependency_time > output_time);
+
+    stale
 }
