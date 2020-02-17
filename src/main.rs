@@ -10,18 +10,29 @@ struct Rule {
     output: PathBuf,
 }
 
-fn main() {
-    compile_sources(true);
+struct SourceTask {
+    sources: Vec<Rule>,
 }
 
-fn compile_sources(incremental: bool) {
+fn main() {
+    let task = source_task();
+    compile_sources(&task, true);
+}
+
+fn source_task() -> SourceTask {
     let files = fs::read_dir("src").expect("src directory does not exist");
     let rules = files
         .map(|file| file.unwrap())
         .filter(|file| file.path().extension().expect("file missing extension") == "cpp")
-        .map(|file| make_rule(&file.path()));
+        .map(|file| make_rule(&file.path()))
+        .collect();
 
-    rules
+    SourceTask { sources: rules }
+}
+
+fn compile_sources(task: &SourceTask, incremental: bool) {
+    task.sources
+        .iter()
         .filter(|rule| !incremental || is_stale(&rule))
         .map(|rule| compile(&rule))
         .for_each(|result| {
