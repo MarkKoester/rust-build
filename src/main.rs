@@ -14,9 +14,16 @@ struct SourceTask {
     sources: Vec<Rule>,
 }
 
+struct LinkTask {
+    inputs: Vec<PathBuf>,
+    output: PathBuf,
+}
+
 fn main() {
     let task = source_task();
     compile_sources(&task, true);
+    let link_task = link_task();
+    link(&link_task);
 }
 
 fn source_task() -> SourceTask {
@@ -28,6 +35,35 @@ fn source_task() -> SourceTask {
         .collect();
 
     SourceTask { sources: rules }
+}
+
+fn link_task() -> LinkTask {
+    let files = fs::read_dir("out/").expect("out directory does not exist");
+    let objects: Vec<PathBuf> = files
+        .map(|file| file.unwrap())
+        .filter(|file| file.path().extension().expect("file missing extension") == "o")
+        .map(|file| file.path())
+        .collect();
+
+    LinkTask {
+        inputs: objects,
+        output: PathBuf::from("out/target"),
+    }
+}
+
+fn link(task: &LinkTask) {
+    let mut command = Command::new("g++");
+    task.inputs.iter().for_each(|file| {
+        command.arg(&file);
+    });
+    command.arg("-o").arg(&task.output);
+
+    println!("{:?}", command);
+    let result = command.output().expect("Link failed");
+    let stderr = str::from_utf8(&result.stderr);
+
+    println!("{}", result.status);
+    println!("{:#?}", stderr);
 }
 
 fn compile_sources(task: &SourceTask, incremental: bool) {
