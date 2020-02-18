@@ -15,7 +15,7 @@ struct SourceTask {
 }
 
 struct LinkTask {
-    inputs: Vec<PathBuf>,
+    dependencies: Vec<PathBuf>,
     output: PathBuf,
 }
 
@@ -41,19 +41,24 @@ fn link_task() -> LinkTask {
     let files = fs::read_dir("out/").expect("out directory does not exist");
     let objects: Vec<PathBuf> = files
         .map(|file| file.unwrap())
+        .filter(|file| file.path().extension().is_some())
         .filter(|file| file.path().extension().expect("file missing extension") == "o")
         .map(|file| file.path())
         .collect();
 
     LinkTask {
-        inputs: objects,
+        dependencies: objects,
         output: PathBuf::from("out/target"),
     }
 }
 
 fn link(task: &LinkTask) {
+    if !is_stale_link(&task) {
+        return;
+    }
+
     let mut command = Command::new("g++");
-    task.inputs.iter().for_each(|file| {
+    task.dependencies.iter().for_each(|file| {
         command.arg(&file);
     });
     command.arg("-o").arg(&task.output);
@@ -145,6 +150,32 @@ fn is_stale(rule: &Rule) -> bool {
         .expect("Cannot read file modified time");
 
     let stale = rule
+        .dependencies
+        .iter()
+        .map(|x| {
+            fs::metadata(&x)
+                .expect("Cannot read metadata")
+                .modified()
+                .expect("Cannot read file modified time")
+        })
+        .any(|dependency_time| dependency_time > output_time);
+
+    stale
+}
+
+fn is_stale_link(task: &LinkTask) -> bool {
+    let output_metadata = fs::metadata(&task.output);
+
+    if output_metadata.is_err() {
+        return true;
+    }
+
+    let output_time = output_metadata
+        .expect("Cannot read output metadata")
+        .modified()
+        .expect("Cannot read file modified time");
+
+    let stale = task
         .dependencies
         .iter()
         .map(|x| {
