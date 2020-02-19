@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::process::Output;
 use std::str;
 
 struct Rule {
@@ -11,180 +10,198 @@ struct Rule {
 }
 
 struct SourceTask {
-    sources: Vec<Rule>,
+    inputs: Vec<Rule>,
 }
 
 struct LinkTask {
-    dependencies: Vec<PathBuf>,
+    inputs: Vec<PathBuf>,
     output: PathBuf,
 }
 
-fn main() {
-    let task = source_task();
-    compile_sources(&task, true);
-    let link_task = link_task();
-    link(&link_task);
+trait Task {
+    fn run(&self);
+    fn is_stale(&self) -> bool;
 }
 
-fn source_task() -> SourceTask {
-    let files = fs::read_dir("src").expect("src directory does not exist");
-    let rules = files
-        .map(|file| file.unwrap())
-        .filter(|file| file.path().extension().expect("file missing extension") == "cpp")
-        .map(|file| make_rule(&file.path()))
-        .collect();
+impl Rule {
+    fn new(file: &Path) -> Rule {
+        let source_directory = fs::canonicalize("src/").expect("directory src/ does not exist");
+        let out_directory = fs::canonicalize("out/").expect("directory out/ does not exist");
 
-    SourceTask { sources: rules }
-}
+        let file_name = file.file_name().expect("file does not exist");
 
-fn link_task() -> LinkTask {
-    let files = fs::read_dir("out/").expect("out directory does not exist");
-    let objects: Vec<PathBuf> = files
-        .map(|file| file.unwrap())
-        .filter(|file| file.path().extension().is_some())
-        .filter(|file| file.path().extension().expect("file missing extension") == "o")
-        .map(|file| file.path())
-        .collect();
+        let mut output_file_name = PathBuf::from(&file_name);
+        output_file_name.set_extension("o");
 
-    LinkTask {
-        dependencies: objects,
-        output: PathBuf::from("out/target"),
+        let mut input = PathBuf::from(&source_directory);
+        input.push(&file_name);
+
+        let mut output = PathBuf::from(&out_directory);
+        output.push(&output_file_name);
+        let dependencies = Rule::get_dependencies(file);
+
+        Rule {
+            input,
+            dependencies,
+            output,
+        }
+    }
+
+    fn get_dependencies(file: &Path) -> Vec<PathBuf> {
+        let mut command = Command::new("g++");
+        command.arg(&file).arg("-MM");
+        let result = command
+            .output()
+            .expect("failed to parse source dependencies");
+
+        let stdout = String::from_utf8(result.stdout).expect("String is not utf-8");
+        let dependencies: Vec<PathBuf> = stdout
+            .split_whitespace()
+            .filter(|&x| x != "\\")
+            .skip(1)
+            .map(|x| PathBuf::from(&x))
+            .collect();
+
+        println!("{:?}", dependencies);
+        dependencies
     }
 }
 
-fn link(task: &LinkTask) {
-    if !is_stale_link(&task) {
-        return;
+impl Task for Rule {
+    fn run(&self) {
+        let mut command = Command::new("g++");
+        command
+            .arg(&self.input)
+            .arg("-o")
+            .arg(&self.output)
+            .arg("-c");
+        println!("{:?}", command);
+        let result = command.output().expect("failed to compile");
+        let stderr = str::from_utf8(&result.stderr);
+        println!("{}", result.status);
+        println!("{:#?}", stderr);
     }
 
-    let mut command = Command::new("g++");
-    task.dependencies.iter().for_each(|file| {
-        command.arg(&file);
-    });
-    command.arg("-o").arg(&task.output);
+    fn is_stale(&self) -> bool {
+        let output_metadata = fs::metadata(&self.output);
 
-    println!("{:?}", command);
-    let result = command.output().expect("Link failed");
-    let stderr = str::from_utf8(&result.stderr);
+        if output_metadata.is_err() {
+            return true;
+        }
 
-    println!("{}", result.status);
-    println!("{:#?}", stderr);
+        let output_time = output_metadata
+            .expect("Cannot read output metadata")
+            .modified()
+            .expect("Cannot read file modified time");
+
+        let stale = self
+            .dependencies
+            .iter()
+            .map(|x| {
+                fs::metadata(&x)
+                    .expect("Cannot read metadata")
+                    .modified()
+                    .expect("Cannot read file modified time")
+            })
+            .any(|dependency_time| dependency_time > output_time);
+
+        stale
+    }
 }
 
-fn compile_sources(task: &SourceTask, incremental: bool) {
-    task.sources
-        .iter()
-        .filter(|rule| !incremental || is_stale(&rule))
-        .map(|rule| compile(&rule))
-        .for_each(|result| {
-            let stderr = str::from_utf8(&result.stderr);
-            println!("{}", result.status);
-            println!("{:#?}", stderr);
+impl SourceTask {
+    fn new() -> SourceTask {
+        let files = fs::read_dir("src").expect("src directory does not exist");
+        let rules = files
+            .map(|file| file.unwrap())
+            .filter(|file| file.path().extension().expect("file missing extension") == "cpp")
+            .map(|file| Rule::new(&file.path()))
+            .collect();
+
+        SourceTask { inputs: rules }
+    }
+}
+
+impl Task for SourceTask {
+    fn run(&self) {
+        self.inputs
+            .iter()
+            .filter(|&rule| rule.is_stale())
+            .for_each(|rule| rule.run())
+    }
+
+    fn is_stale(&self) -> bool {
+        true
+    }
+}
+
+impl LinkTask {
+    fn new() -> LinkTask {
+        let files = fs::read_dir("out/").expect("out directory does not exist");
+        let objects: Vec<PathBuf> = files
+            .map(|file| file.unwrap())
+            .filter(|file| file.path().extension().is_some())
+            .filter(|file| file.path().extension().expect("file missing extension") == "o")
+            .map(|file| file.path())
+            .collect();
+
+        LinkTask {
+            inputs: objects,
+            output: PathBuf::from("out/target"),
+        }
+    }
+}
+
+impl Task for LinkTask {
+    fn run(&self) {
+        if !self.is_stale() {
+            return;
+        }
+
+        let mut command = Command::new("g++");
+        self.inputs.iter().for_each(|file| {
+            command.arg(&file);
         });
-}
+        command.arg("-o").arg(&self.output);
 
-fn compile(rule: &Rule) -> Output {
-    let mut command = Command::new("g++");
-    command
-        .arg(&rule.input)
-        .arg("-o")
-        .arg(&rule.output)
-        .arg("-c");
-    println!("{:?}", command);
-    let result = command.output().expect("failed to compile");
-    result
-}
+        println!("{:?}", command);
+        let result = command.output().expect("Link failed");
+        let stderr = str::from_utf8(&result.stderr);
 
-fn make_rule(file: &Path) -> Rule {
-    let source_directory = fs::canonicalize("src/").expect("directory src/ does not exist");
-    let out_directory = fs::canonicalize("out/").expect("directory out/ does not exist");
+        println!("{}", result.status);
+        println!("{:#?}", stderr);
+    }
 
-    let file_name = file.file_name().expect("file does not exist");
+    fn is_stale(&self) -> bool {
+        let output_metadata = fs::metadata(&self.output);
 
-    let mut output_file_name = PathBuf::from(&file_name);
-    output_file_name.set_extension("o");
+        if output_metadata.is_err() {
+            return true;
+        }
 
-    let mut input = PathBuf::from(&source_directory);
-    input.push(&file_name);
+        let output_time = output_metadata
+            .expect("Cannot read output metadata")
+            .modified()
+            .expect("Cannot read file modified time");
 
-    let mut output = PathBuf::from(&out_directory);
-    output.push(&output_file_name);
-    let dependencies = get_source_dependencies(file);
+        let stale = self
+            .inputs
+            .iter()
+            .map(|x| {
+                fs::metadata(&x)
+                    .expect("Cannot read metadata")
+                    .modified()
+                    .expect("Cannot read file modified time")
+            })
+            .any(|dependency_time| dependency_time > output_time);
 
-    Rule {
-        input,
-        dependencies,
-        output,
+        stale
     }
 }
 
-fn get_source_dependencies(file: &Path) -> Vec<PathBuf> {
-    let mut command = Command::new("g++");
-    command.arg(&file).arg("-MM");
-    let result = command
-        .output()
-        .expect("failed to parse source dependencies");
-
-    let stdout = String::from_utf8(result.stdout).expect("String is not utf-8");
-    let dependencies: Vec<PathBuf> = stdout
-        .split_whitespace()
-        .filter(|&x| x != "\\")
-        .skip(1)
-        .map(|x| PathBuf::from(&x))
-        .collect();
-
-    println!("{:?}", dependencies);
-    dependencies
-}
-
-fn is_stale(rule: &Rule) -> bool {
-    let output_metadata = fs::metadata(&rule.output);
-
-    if output_metadata.is_err() {
-        return true;
-    }
-
-    let output_time = output_metadata
-        .expect("Cannot read output metadata")
-        .modified()
-        .expect("Cannot read file modified time");
-
-    let stale = rule
-        .dependencies
-        .iter()
-        .map(|x| {
-            fs::metadata(&x)
-                .expect("Cannot read metadata")
-                .modified()
-                .expect("Cannot read file modified time")
-        })
-        .any(|dependency_time| dependency_time > output_time);
-
-    stale
-}
-
-fn is_stale_link(task: &LinkTask) -> bool {
-    let output_metadata = fs::metadata(&task.output);
-
-    if output_metadata.is_err() {
-        return true;
-    }
-
-    let output_time = output_metadata
-        .expect("Cannot read output metadata")
-        .modified()
-        .expect("Cannot read file modified time");
-
-    let stale = task
-        .dependencies
-        .iter()
-        .map(|x| {
-            fs::metadata(&x)
-                .expect("Cannot read metadata")
-                .modified()
-                .expect("Cannot read file modified time")
-        })
-        .any(|dependency_time| dependency_time > output_time);
-
-    stale
+fn main() {
+    let task = SourceTask::new();
+    task.run();
+    let link_task = LinkTask::new();
+    link_task.run();
 }
