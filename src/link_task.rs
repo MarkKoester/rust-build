@@ -1,4 +1,5 @@
 use crate::task::Task;
+use colored::*;
 use std::fs::{metadata, read_dir};
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,7 +29,10 @@ impl LinkTask {
 
 impl Task for LinkTask {
     fn run(&self) {
+        println!("{}", "Linking".bold());
+
         if !self.is_stale() {
+            println!("{}", "Done".bright_green().bold());
             return;
         }
 
@@ -44,6 +48,7 @@ impl Task for LinkTask {
 
         println!("{}", result.status);
         println!("{:#?}", stderr);
+        println!("{}", "Done".bright_green().bold());
     }
 
     fn is_stale(&self) -> bool {

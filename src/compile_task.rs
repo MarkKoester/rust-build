@@ -1,4 +1,5 @@
 use crate::task::Task;
+use colored::*;
 use std::fs::{canonicalize, metadata, read_dir};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,6 +116,18 @@ impl CompileTask {
 
 impl Task for CompileTask {
     fn run(&self) {
+        println!("{}", "Compiling".bold());
+        self.inputs.iter().for_each(|rule| {
+            println!(
+                "{}",
+                &rule
+                    .input
+                    .strip_prefix(std::env::current_dir().expect("couldn't get current directory"))
+                    .expect("hi")
+                    .display()
+                    .to_string()
+            )
+        });
         self.inputs
             .iter()
             .filter(|&rule| rule.is_stale())
